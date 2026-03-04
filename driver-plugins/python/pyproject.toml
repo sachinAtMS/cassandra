@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cassandra-entra-id-auth"
+version = "1.0.0"
+description = "Microsoft Entra ID (Azure AD) authentication plugin for Apache Cassandra Python driver and CQLSH"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.7"
+authors = [
+    {name = "Apache Cassandra Contributors"}
+]
+keywords = ["cassandra", "authentication", "entra-id", "azure-ad", "msal", "jwt", "cqlsh"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "cassandra-driver>=3.25.0",
+    "msal>=1.24.0",
+]
+
+[project.optional-dependencies]
+azure = [
+    "azure-identity>=1.14.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "flake8>=6.0",
+]
+all = [
+    "cassandra-entra-id-auth[azure,dev]",
+]
+
+[project.urls]
+Homepage = "https://cassandra.apache.org"
+Repository = "https://github.com/apache/cassandra"
+Documentation = "https://cassandra.apache.org/doc/latest/cassandra/entra-id/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

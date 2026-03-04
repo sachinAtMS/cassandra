@@ -1,0 +1,31 @@
+# =============================================================================
+# Microsoft Entra ID Authentication Configuration for Apache Cassandra
+# =============================================================================
+#
+# This file configures the EntraID Authenticator and Authorizer plugin.
+#
+# INSTALLATION:
+#   1. Copy the plugin JAR to $CASSANDRA_HOME/lib/
+#   2. Copy this file to $CASSANDRA_HOME/conf/entra-id.properties
+#   3. Edit the values below with your Entra ID application registration details.
+#   4. Update cassandra.yaml to use the EntraID authenticator & authorizer.
+#
+# CONFIGURATION PRECEDENCE:
+#   The plugin reads configuration in this order (first value wins):
+#     1. JVM system properties:  -Dcassandra.entra.tenant_id=...
+#     2. This properties file:   conf/entra-id.properties
+#     3. Custom file path:       -Dcassandra.entra.config=/path/to/file
+#
+# =============================================================================
+
+# ------------ Required Settings ------------
+
+# The Azure AD / Entra ID Tenant ID (Directory ID)
+# Found in: Azure Portal > Microsoft Entra ID > Overview > Tenant ID
+# Example: 72f988bf-86f1-41af-91ab-2d7cd011db47
+tenant_id=YOUR-TENANT-ID-HERE
+
+# The Application (client) ID from the App Registration
+# Found in: Azure Portal > App Registrations > Your App > Application (client) ID
+# Example: 6731de76-14a6-49ae-97bc-6eba6914391e
+client_id=YOUR-CLIENT-ID-HERE

@@ -23,6 +23,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -155,6 +156,7 @@ import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.service.paxos.Ballot;
 import org.apache.cassandra.service.paxos.PaxosRepairHistory;
 import org.apache.cassandra.service.paxos.TablePaxosRepairHistory;
+import org.apache.cassandra.service.snapshot.ExternalSnapshotManager;
 import org.apache.cassandra.service.snapshot.SnapshotManifest;
 import org.apache.cassandra.service.snapshot.TableSnapshot;
 import org.apache.cassandra.streaming.TableStreamManager;
@@ -2014,6 +2016,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean, Memtable.Owner
         if (rateLimiter == null)
             rateLimiter = DatabaseDescriptor.getSnapshotRateLimiter();
 
+        boolean useExternalSnapshots = ExternalSnapshotManager.isEnabled()
+            && ExternalSnapshotManager.instance().shouldStoreExternally(snapshotName, ephemeral, keyspace.getName());
+        boolean useSeparateSnapshotDir = !useExternalSnapshots && DatabaseDescriptor.hasSnapshotDirectory();
+
         Set<SSTableReader> snapshottedSSTables = new LinkedHashSet<>();
         for (ColumnFamilyStore cfs : concatWithIndexes())
         {
@@ -2021,14 +2027,44 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean, Memtable.Owner
             {
                 for (SSTableReader ssTable : currentView.sstables)
                 {
-                    File snapshotDirectory = Directories.getSnapshotDirectory(ssTable.descriptor, snapshotName);
-                    ssTable.createLinks(snapshotDirectory.path(), rateLimiter); // hard links
+                    if (!useExternalSnapshots)
+                    {
+                        File snapshotDirectory = Directories.getSnapshotDirectory(ssTable.descriptor, snapshotName);
+                        if (useSeparateSnapshotDir)
+                            copySSTableToDirectory(ssTable, snapshotDirectory, rateLimiter);
+                        else
+                            ssTable.createLinks(snapshotDirectory.path(), rateLimiter); // hard links
 
-                    if (logger.isTraceEnabled())
-                        logger.trace("Snapshot for {} keyspace data file {} created in {}", keyspace, ssTable.getFilename(), snapshotDirectory);
+                        if (logger.isTraceEnabled())
+                            logger.trace("Snapshot for {} keyspace data file {} created in {} (mode={})",
+                                         keyspace, ssTable.getFilename(), snapshotDirectory,
+                                         useSeparateSnapshotDir ? "copy" : "hardlink");
+                    }
                     snapshottedSSTables.add(ssTable);
                 }
             }
+        }
+
+        // Copy SSTables to external pool with deduplication and write external manifest
+        if (useExternalSnapshots)
+        {
+            String tableId = metadata.id.asUUID().toString().replace("-", "");
+            Set<String> sstableIds = ExternalSnapshotManager.instance().copySSTablesForSnapshot(
+                snapshottedSSTables, keyspace.getName(), name, tableId, rateLimiter);
+
+            List<String> files = mapToDataFilenames(snapshottedSSTables);
+            String schemaCql = null;
+            String schemaVersion = null;
+            if (!SchemaConstants.isLocalSystemKeyspace(metadata.keyspace)
+                && !SchemaConstants.isReplicatedSystemKeyspace(metadata.keyspace))
+            {
+                schemaVersion = Schema.instance.getVersion() != null ? Schema.instance.getVersion().toString() : null;
+            }
+            ExternalSnapshotManager.instance().writeManifest(snapshotName, keyspace.getName(), name, tableId,
+                files, sstableIds, ttl, creationTime, schemaCql, schemaVersion);
+
+            logger.debug("External snapshot {} for {}.{} stored {} SSTables ({} unique ids)",
+                         snapshotName, keyspace.getName(), name, snapshottedSSTables.size(), sstableIds.size());
         }
 
         return createSnapshot(snapshotName, ephemeral, ttl, snapshottedSSTables, creationTime);
@@ -2258,7 +2294,60 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean, Memtable.Owner
         RateLimiter clearSnapshotRateLimiter = DatabaseDescriptor.getSnapshotRateLimiter();
 
         List<File> snapshotDirs = getDirectories().getCFDirectories();
-        Directories.clearSnapshot(snapshotName, snapshotDirs, clearSnapshotRateLimiter);
+        Directories.clearSnapshot(snapshotName, snapshotDirs, clearSnapshotRateLimiter, true);
+
+        // Also clear from external snapshot storage with reference-counted cleanup
+        if (ExternalSnapshotManager.isEnabled())
+        {
+            String tableId = metadata.id.asUUID().toString().replace("-", "");
+            if (snapshotName != null && !snapshotName.isEmpty())
+                ExternalSnapshotManager.instance().clearSnapshot(snapshotName, keyspace.getName(), name, tableId);
+            else
+                ExternalSnapshotManager.instance().clearAllSnapshots(keyspace.getName(), name, tableId);
+        }
+    }
+
+    /**
+     * Copies all components of an SSTable to the given directory.
+     * Used instead of hardlinks when snapshot_directory is configured,
+     * since hardlinks cannot cross filesystem boundaries.
+     */
+    private static void copySSTableToDirectory(SSTableReader ssTable, File targetDirectory,
+                                               RateLimiter rateLimiter)
+    {
+        if (!targetDirectory.exists())
+            targetDirectory.tryCreateDirectories();
+
+        try
+        {
+            Descriptor descriptor = ssTable.descriptor;
+            for (Component component : ssTable.getComponents())
+            {
+                File sourceFile = new File(descriptor.filenameFor(component));
+                File targetFile = new File(targetDirectory, sourceFile.name());
+
+                if (!sourceFile.exists())
+                    continue;
+
+                if (targetFile.exists())
+                {
+                    logger.trace("Snapshot file already exists, skipping: {}", targetFile);
+                    continue;
+                }
+
+                if (rateLimiter != null)
+                    rateLimiter.acquire();
+
+                Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.COPY_ATTRIBUTES);
+
+                if (logger.isTraceEnabled())
+                    logger.trace("Copied SSTable component {} to {}", sourceFile, targetFile);
+            }
+        }
+        catch (IOException e)
+        {
+            throw new FSWriteError(e, targetDirectory);
+        }
     }
     /**
      *
